@@ -1,0 +1,12 @@
+# Reverse Proxy Server Dependencies
+
+# Config parsing
+PyYAML>=6.0
+
+# Testing echo server
+starlette>=0.32.0
+uvicorn>=0.24.0
+
+# Load testing (optional)
+# httpx>=0.25.0  # for async client testing
+

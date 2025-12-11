@@ -1,0 +1,28 @@
+# Пример конфигурации Reverse Proxy Server
+
+# Адрес и порт для прослушивания
+listen: "127.0.0.1:8080"
+
+# Список upstream серверов (round-robin балансировка)
+upstreams:
+  - host: "127.0.0.1"
+    port: 9001
+  - host: "127.0.0.1"
+    port: 9002
+
+# Таймауты (в миллисекундах)
+timeouts:
+  connect_ms: 1000    # Таймаут подключения к upstream
+  read_ms: 15000      # Таймаут чтения данных
+  write_ms: 15000     # Таймаут записи данных
+  total_ms: 30000     # Общий таймаут на запрос
+
+# Лимиты соединений
+limits:
+  max_client_conns: 1000       # Максимум одновременных клиентов
+  max_conns_per_upstream: 100  # Максимум соединений к каждому upstream
+
+# Логирование
+logging:
+  level: "info"  # debug, info, warning, error
+
