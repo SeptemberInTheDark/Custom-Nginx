@@ -1,6 +1,11 @@
+"""
+TCP-сервер для приёма клиентских соединений.
+
+Использует asyncio.start_server() — низкоуровневый, но простой API.
+Каждое соединение обрабатывается в отдельной корутине.
+"""
 import asyncio
 import logging
-import signal
 from typing import Optional
 
 from proxy.client_handler import handle_client
@@ -11,17 +16,23 @@ logger = logging.getLogger("proxy")
 
 
 class ProxyServer:
-    """Асинхронный reverse proxy сервер."""
+    """
+    Основной класс сервера.
+    
+    Принимает TCP-соединения, ограничивает их количество через семафор
+    и делегирует обработку в handle_client().
+    """
 
     def __init__(self, config: ProxyConfig):
         self.config = config
         self.upstream_pool = self._create_upstream_pool()
+        # семафор для ограничения одновременных клиентов
         self._client_semaphore = asyncio.Semaphore(config.limits.max_client_conns)
         self._server: Optional[asyncio.Server] = None
         self._active_connections = 0
 
     def _create_upstream_pool(self) -> UpstreamPool:
-        """Создаёт пул апстримов из конфигурации."""
+        """Конвертируем конфиг в рабочие Upstream-объекты с семафорами."""
         upstreams = [
             Upstream(
                 host=u.host,
@@ -33,7 +44,12 @@ class ProxyServer:
         return UpstreamPool(upstreams)
 
     async def start(self) -> None:
-        """Запуск сервера."""
+        """
+        Запуск сервера.
+        
+        start_server() создаёт сокет и начинает принимать соединения.
+        Для каждого нового соединения вызывается _handle_client_wrapper.
+        """
         self._server = await asyncio.start_server(
             self._handle_client_wrapper,
             self.config.listen_host,
@@ -44,11 +60,12 @@ class ProxyServer:
         logger.info(f"Proxy server started on {addr}")
         logger.info(f"Upstreams: {[u.address for u in self.upstream_pool.upstreams]}")
 
+        # serve_forever() блокирует до вызова close()
         async with self._server:
             await self._server.serve_forever()
 
     async def stop(self) -> None:
-        """Остановка сервера."""
+        """Корректная остановка — ждём закрытия всех соединений."""
         if self._server:
             logger.info("Stopping proxy server...")
             self._server.close()
@@ -60,10 +77,14 @@ class ProxyServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """Обёртка для обработки клиента с учётом лимита соединений."""
-        # Проверяем лимит соединений без блокировки
+        """
+        Обёртка над handle_client с проверкой лимита.
+        
+        Если семафор locked() — все слоты заняты, сразу отдаём 503.
+        Это лучше чем вешать клиента в очередь на неопределённое время.
+        """
+        # быстрая проверка без блокировки
         if self._client_semaphore.locked():
-            # Превышен лимит — отклоняем соединение
             client_addr = writer.get_extra_info("peername")
             logger.warning(f"[{client_addr}] Connection rejected: limit exceeded")
             try:
@@ -81,6 +102,7 @@ class ProxyServer:
                 await writer.wait_closed()
             return
 
+        # нормальная обработка — захватываем слот в семафоре
         async with self._client_semaphore:
             self._active_connections += 1
             try:
@@ -95,4 +117,5 @@ class ProxyServer:
 
     @property
     def active_connections(self) -> int:
+        """Для метрик и отладки."""
         return self._active_connections

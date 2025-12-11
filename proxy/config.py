@@ -1,24 +1,43 @@
+"""
+Конфигурация прокси-сервера.
+
+Все настройки описаны как dataclasses — это проще Pydantic
+и не тянет лишние зависимости.
+"""
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 import yaml
 
 
 @dataclass
 class UpstreamConfig:
+    """
+    Один upstream-сервер.
+    
+    Используется только для хранения конфига,
+    рабочий Upstream с семафором создаётся в upstream_pool.py
+    """
     host: str
     port: int
 
     @property
     def address(self) -> str:
+        """Человекочитаемый адрес для логов."""
         return f"{self.host}:{self.port}"
 
 
 @dataclass
 class TimeoutConfig:
-    connect_ms: int = 1000
-    read_ms: int = 15000
-    write_ms: int = 15000
-    total_ms: int = 30000
+    """
+    Таймауты для различных операций.
+    
+    Храним в миллисекундах (так удобнее в конфиге),
+    но properties возвращают секунды для asyncio.wait_for()
+    """
+    connect_ms: int = 1000      # 1 сек на коннект — обычно хватает
+    read_ms: int = 15000        # 15 сек на чтение — для медленных ответов
+    write_ms: int = 15000       # 15 сек на запись
+    total_ms: int = 30000       # общий таймаут на весь запрос
 
     @property
     def connect(self) -> float:
@@ -39,12 +58,18 @@ class TimeoutConfig:
 
 @dataclass
 class LimitsConfig:
-    max_client_conns: int = 1000
-    max_conns_per_upstream: int = 100
+    """Лимиты на количество соединений."""
+    max_client_conns: int = 1000         # сколько клиентов держим одновременно
+    max_conns_per_upstream: int = 100    # чтобы не завалить upstream
 
 
 @dataclass
 class ProxyConfig:
+    """
+    Корневой конфиг приложения.
+    
+    Можно создать через from_yaml() или default() для разработки.
+    """
     listen_host: str = "127.0.0.1"
     listen_port: int = 8080
     upstreams: List[UpstreamConfig] = field(default_factory=list)
@@ -54,26 +79,29 @@ class ProxyConfig:
 
     @classmethod
     def from_yaml(cls, path: str) -> "ProxyConfig":
+        """
+        Парсит YAML-конфиг.
+        
+        Формат см. в config.example.yaml
+        """
         with open(path, "r") as f:
             data = yaml.safe_load(f)
 
-        # Парсим listen адрес "127.0.0.1:8080"
+        # listen может быть "127.0.0.1:8080" или просто "0.0.0.0"
         listen = data.get("listen", "127.0.0.1:8080")
         if ":" in listen:
-            host, port = listen.rsplit(":", 1)
+            host, port = listen.rsplit(":", 1)  # rsplit на случай IPv6
             listen_host = host
             listen_port = int(port)
         else:
             listen_host = listen
             listen_port = 8080
 
-        # Парсим upstreams
         upstreams = [
             UpstreamConfig(host=u["host"], port=u["port"])
             for u in data.get("upstreams", [])
         ]
 
-        # Парсим timeouts
         timeouts_data = data.get("timeouts", {})
         timeouts = TimeoutConfig(
             connect_ms=timeouts_data.get("connect_ms", 1000),
@@ -82,7 +110,6 @@ class ProxyConfig:
             total_ms=timeouts_data.get("total_ms", 30000),
         )
 
-        # Парсим limits
         limits_data = data.get("limits", {})
         limits = LimitsConfig(
             max_client_conns=limits_data.get("max_client_conns", 1000),
@@ -100,7 +127,7 @@ class ProxyConfig:
 
     @classmethod
     def default(cls) -> "ProxyConfig":
-        """Конфигурация по умолчанию для разработки."""
+        """Дефолтный конфиг для локальной разработки."""
         return cls(
             upstreams=[
                 UpstreamConfig(host="127.0.0.1", port=9001),

@@ -1,9 +1,9 @@
 """
-Тестовый echo-сервер для проверки proxy.
+Тестовый echo-сервер.
 
-Запуск:
-    uvicorn tests.echo_app:app --host 127.0.0.1 --port 9001 --workers 1
-    uvicorn tests.echo_app:app --host 127.0.0.1 --port 9002 --workers 1
+Запускается как upstream для проверки прокси:
+    uvicorn tests.echo_app:app --host 127.0.0.1 --port 9001
+    uvicorn tests.echo_app:app --host 127.0.0.1 --port 9002
 """
 import asyncio
 
@@ -14,7 +14,11 @@ from starlette.requests import Request
 
 
 async def homepage(request: Request) -> JSONResponse:
-    """Главная страница с информацией о запросе."""
+    """
+    GET / — возвращает информацию о запросе.
+    
+    Удобно для проверки что прокси пробрасывает заголовки.
+    """
     return JSONResponse({
         "message": "Hello from echo server",
         "path": str(request.url.path),
@@ -24,30 +28,47 @@ async def homepage(request: Request) -> JSONResponse:
 
 
 async def echo(request: Request) -> PlainTextResponse:
-    """Эхо-эндпоинт — возвращает тело запроса."""
+    """
+    POST /echo — возвращает тело запроса.
+    
+    curl -X POST http://localhost:8080/echo -d "hello"
+    """
     body = await request.body()
     return PlainTextResponse(body)
 
 
 async def slow(request: Request) -> JSONResponse:
-    """Медленный эндпоинт для тестирования таймаутов."""
+    """
+    GET /slow?delay=5 — отвечает с задержкой.
+    
+    Для тестирования таймаутов.
+    """
     delay = float(request.query_params.get("delay", 5))
     await asyncio.sleep(delay)
     return JSONResponse({"delayed": delay})
 
 
 async def status(request: Request) -> JSONResponse:
-    """Возвращает указанный HTTP статус."""
+    """
+    GET /status?code=404 — возвращает указанный HTTP-код.
+    
+    Для тестирования обработки разных статусов.
+    """
     code = int(request.query_params.get("code", 200))
     return JSONResponse({"status": code}, status_code=code)
 
 
 async def large(request: Request) -> PlainTextResponse:
-    """Возвращает большой ответ для тестирования стриминга."""
-    size = int(request.query_params.get("size", 1024 * 1024))  # 1MB default
+    """
+    GET /large?size=1048576 — большой ответ.
+    
+    Для тестирования стриминга. По умолчанию 1MB.
+    """
+    size = int(request.query_params.get("size", 1024 * 1024))
     return PlainTextResponse("x" * size)
 
 
+# маршруты
 app = Starlette(
     routes=[
         Route("/", homepage),

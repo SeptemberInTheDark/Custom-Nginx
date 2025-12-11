@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Точка входа для асинхронного reverse proxy сервера.
+Точка входа.
 
 Запуск:
     python -m proxy.main
     python -m proxy.main --config config.yaml
+    python -m proxy.main -p 9000 --log-level debug
 """
 import argparse
 import asyncio
@@ -18,6 +19,7 @@ from proxy.logger import setup_logger
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI-аргументы. Конфиг имеет приоритет над флагами."""
     parser = argparse.ArgumentParser(
         description="Async Reverse Proxy Server",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -51,11 +53,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_config(args: argparse.Namespace) -> ProxyConfig:
-    """Загружает конфигурацию из файла или использует дефолтную."""
+    """Загружает конфиг из YAML или создаёт дефолтный."""
     if args.config and Path(args.config).exists():
         return ProxyConfig.from_yaml(args.config)
 
-    # Дефолтная конфигурация
+    # без конфига — дефолтные upstreams на 9001/9002
     config = ProxyConfig.default()
     config.listen_host = args.host
     config.listen_port = args.port
@@ -64,11 +66,16 @@ def load_config(args: argparse.Namespace) -> ProxyConfig:
 
 
 async def shutdown(server: ProxyServer, sig: signal.Signals) -> None:
-    """Graceful shutdown при получении сигнала."""
+    """
+    Graceful shutdown.
+    
+    Останавливаем сервер, отменяем все задачи и ждём их завершения.
+    return_exceptions=True чтобы не упасть от CancelledError.
+    """
     logging.info(f"Received {sig.name}, shutting down...")
     await server.stop()
 
-    # Отменяем все активные задачи
+    # собираем все задачи кроме текущей
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for task in tasks:
         task.cancel()
@@ -79,20 +86,18 @@ async def shutdown(server: ProxyServer, sig: signal.Signals) -> None:
 async def main() -> None:
     args = parse_args()
 
-    # Настройка логирования
     setup_logger(args.log_level)
     logger = logging.getLogger("proxy")
 
-    # Загрузка конфигурации
     config = load_config(args)
     logger.debug(f"Config loaded: {config}")
 
-    # Создание и запуск сервера
     server = ProxyServer(config)
 
-    # Настройка graceful shutdown
+    # ловим SIGTERM (docker stop) и SIGINT (Ctrl+C)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
+        # lambda s=sig — захват по значению, иначе обе лямбды будут с одним sig
         loop.add_signal_handler(
             sig,
             lambda s=sig: asyncio.create_task(shutdown(server, s)),
@@ -108,5 +113,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
-
+        pass  # уже обработали в shutdown

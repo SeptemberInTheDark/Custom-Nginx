@@ -1,10 +1,21 @@
+"""
+Настройка логирования.
+
+Ничего особенного — стандартный logging с форматом под консоль.
+"""
 import logging
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+
 @dataclass
 class RequestLog:
+    """
+    Данные для лога запроса.
+    
+    Заполняется по ходу обработки и выводится в finally.
+    """
     method: str
     path: str
     upstream: str
@@ -15,6 +26,11 @@ class RequestLog:
 
 
 def setup_logger(level: str = "info") -> logging.Logger:
+    """
+    Настраивает логгер "proxy".
+    
+    Формат: 2025-01-15 12:30:45 | INFO | message
+    """
     logger = logging.getLogger("proxy")
     logger.setLevel(getattr(logging, level.upper()))
 
@@ -31,7 +47,15 @@ def setup_logger(level: str = "info") -> logging.Logger:
 
 @contextmanager
 def log_request(logger: logging.Logger, method: str, path: str):
-    """Контекст для измерения времени запроса"""
+    """
+    Контекст для измерения времени запроса.
+    
+    Использование:
+        with log_request(logger, "GET", "/api") as log:
+            log.upstream = "127.0.0.1:9001"
+            log.status = 200
+        # автоматически залогирует с duration
+    """
     start = time.perf_counter()
     log = RequestLog(method=method, path=path, upstream="", status=0, duration_ms=0)
 
