@@ -11,6 +11,7 @@ from typing import Optional
 from proxy.client_handler import handle_client
 from proxy.config import ProxyConfig
 from proxy.upstream_pool import UpstreamPool, Upstream
+from proxy.logger import generate_trace_id, set_trace_id
 
 logger = logging.getLogger("proxy")
 
@@ -85,15 +86,21 @@ class ProxyServer:
         """
         # быстрая проверка без блокировки
         if self._client_semaphore.locked():
+            # даже для отклонённых запросов генерируем trace_id
+            trace_id = generate_trace_id()
+            set_trace_id(trace_id)
+            
             client_addr = writer.get_extra_info("peername")
-            logger.warning(f"[{client_addr}] Connection rejected: limit exceeded")
+            logger.warning(f"Connection rejected from {client_addr}: limit exceeded")
             try:
-                writer.write(
+                response = (
                     b"HTTP/1.1 503 Service Unavailable\r\n"
                     b"Content-Length: 0\r\n"
                     b"Connection: close\r\n"
+                    b"X-Trace-Id: " + trace_id.encode() + b"\r\n"
                     b"\r\n"
                 )
+                writer.write(response)
                 await writer.drain()
             except Exception:
                 pass

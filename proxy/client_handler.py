@@ -14,6 +14,7 @@ from proxy.config import TimeoutConfig
 from proxy.upstream_pool import UpstreamPool, Upstream
 from proxy.timeouts import with_timeout
 from proxy.utils.http import HttpRequest, parse_request
+from proxy.logger import generate_trace_id, set_trace_id, get_trace_id
 
 logger = logging.getLogger("proxy")
 
@@ -35,6 +36,10 @@ async def handle_client(
     client -> parse headers -> upstream -> stream body -> upstream
     upstream -> stream response -> client
     """
+    # генерируем trace_id в начале — все логи в этом запросе будут с ним
+    trace_id = generate_trace_id()
+    set_trace_id(trace_id)
+    
     client_addr = client_writer.get_extra_info("peername")
     upstream_info = "unknown"
 
@@ -46,15 +51,15 @@ async def handle_client(
             "parsing request"
         )
 
-        logger.debug(f"[{client_addr}] {request.method} {request.path}")
+        logger.debug(f"{request.method} {request.path} from {client_addr}")
 
         # берём соединение из пула (с учётом лимитов и round-robin)
         async with upstream_pool.acquire_connection(timeouts.connect) as (up_reader, up_writer, upstream):
             upstream_info = upstream.address
-            logger.debug(f"[{client_addr}] -> upstream {upstream_info}")
+            logger.debug(f"-> upstream {upstream_info}")
 
-            # отправляем заголовки запроса
-            await forward_request_headers(request, up_writer, timeouts)
+            # отправляем заголовки запроса + добавляем X-Trace-Id
+            await forward_request_headers(request, up_writer, timeouts, trace_id)
 
             # стримим тело запроса если есть
             if request.content_length:
@@ -70,17 +75,17 @@ async def handle_client(
 
             # получаем и стримим ответ
             status_code = await stream_response(up_reader, client_writer, timeouts)
-            logger.info(f"[{client_addr}] {request.method} {request.path} -> {upstream_info} | {status_code}")
+            logger.info(f"{request.method} {request.path} -> {upstream_info} | {status_code}")
 
     except TimeoutError as e:
-        logger.warning(f"[{client_addr}] Timeout: {e}")
-        await send_error(client_writer, 504, "Gateway Timeout")
+        logger.warning(f"Timeout: {e}")
+        await send_error(client_writer, 504, "Gateway Timeout", trace_id)
     except ConnectionError as e:
-        logger.warning(f"[{client_addr}] Connection error: {e}")
-        await send_error(client_writer, 502, "Bad Gateway")
+        logger.warning(f"Connection error: {e}")
+        await send_error(client_writer, 502, "Bad Gateway", trace_id)
     except Exception as e:
-        logger.exception(f"[{client_addr}] Unexpected error: {e}")
-        await send_error(client_writer, 500, "Internal Server Error")
+        logger.exception(f"Unexpected error: {e}")
+        await send_error(client_writer, 500, "Internal Server Error", trace_id)
     finally:
         # всегда закрываем соединение с клиентом
         try:
@@ -94,23 +99,30 @@ async def forward_request_headers(
     request: HttpRequest,
     writer: asyncio.StreamWriter,
     timeouts: TimeoutConfig,
+    trace_id: str,
 ) -> None:
     """
     Пересылает HTTP-заголовки upstream'у.
     
+    Добавляет X-Trace-Id для сквозной трассировки.
+    
     Формат HTTP/1.1:
     GET /path HTTP/1.1\r\n
     Host: example.com\r\n
+    X-Trace-Id: abc12345\r\n
     \r\n
     """
     # request line
     start_line = f"{request.method} {request.path} {request.version}\r\n"
     writer.write(start_line.encode("latin-1"))
 
-    # headers
+    # оригинальные headers
     for name, value in request.headers.items():
         header_line = f"{name}: {value}\r\n"
         writer.write(header_line.encode("latin-1"))
+
+    # добавляем trace_id — upstream тоже сможет его логировать
+    writer.write(f"x-trace-id: {trace_id}\r\n".encode("latin-1"))
 
     # пустая строка = конец заголовков
     writer.write(b"\r\n")
@@ -268,19 +280,22 @@ async def send_error(
     writer: asyncio.StreamWriter,
     status_code: int,
     message: str,
+    trace_id: str,
 ) -> None:
     """
     Отправляет клиенту страницу ошибки.
     
+    Включает trace_id в заголовок X-Trace-Id для отладки.
     Connection: close — после ошибки закрываем соединение.
     """
-    body = f"<html><body><h1>{status_code} {message}</h1></body></html>"
+    body = f"<html><body><h1>{status_code} {message}</h1><p>trace: {trace_id}</p></body></html>"
     body_bytes = body.encode("utf-8")
 
     response = (
         f"HTTP/1.1 {status_code} {message}\r\n"
         f"Content-Type: text/html; charset=utf-8\r\n"
         f"Content-Length: {len(body_bytes)}\r\n"
+        f"X-Trace-Id: {trace_id}\r\n"
         f"Connection: close\r\n"
         f"\r\n"
     )
