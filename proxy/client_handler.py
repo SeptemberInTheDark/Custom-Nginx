@@ -14,7 +14,7 @@ from proxy.config import TimeoutConfig
 from proxy.upstream_pool import UpstreamPool, Upstream
 from proxy.timeouts import with_timeout
 from proxy.utils.http import HttpRequest, parse_request
-from proxy.logger import generate_trace_id, set_trace_id, get_trace_id
+from proxy.logger import generate_trace_id, set_trace_id
 
 logger = logging.getLogger("proxy")
 
