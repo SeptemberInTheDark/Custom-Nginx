@@ -4,8 +4,10 @@ TCP-сервер для приёма клиентских соединений.
 Использует asyncio.start_server() — низкоуровневый, но простой API.
 Каждое соединение обрабатывается в отдельной корутине.
 """
+
 import asyncio
 import logging
+import socket
 from typing import Optional
 
 from proxy.client_handler import handle_client
@@ -19,7 +21,7 @@ logger = logging.getLogger("proxy")
 class ProxyServer:
     """
     Основной класс сервера.
-    
+
     Принимает TCP-соединения, ограничивает их количество через семафор
     и делегирует обработку в handle_client().
     """
@@ -47,15 +49,27 @@ class ProxyServer:
     async def start(self) -> None:
         """
         Запуск сервера.
-        
+
         start_server() создаёт сокет и начинает принимать соединения.
         Для каждого нового соединения вызывается _handle_client_wrapper.
         """
+        # Используем большой backlog для обработки много соединений одновременно
         self._server = await asyncio.start_server(
             self._handle_client_wrapper,
             self.config.listen_host,
             self.config.listen_port,
+            backlog=self.config.limits.backlog,
         )
+
+        # Настраиваем опции сокета для производительности
+        for sock in self._server.sockets:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            try:
+                # TCP_NODELAY: отключаем Nagle algorithm
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except (AttributeError, OSError):
+                pass  # может не работать на всех системах
 
         addr = f"{self.config.listen_host}:{self.config.listen_port}"
         logger.info(f"Proxy server started on {addr}")
@@ -80,7 +94,7 @@ class ProxyServer:
     ) -> None:
         """
         Обёртка над handle_client с проверкой лимита.
-        
+
         Если семафор locked() — все слоты заняты, сразу отдаём 503.
         Это лучше чем вешать клиента в очередь на неопределённое время.
         """
@@ -89,7 +103,7 @@ class ProxyServer:
             # даже для отклонённых запросов генерируем trace_id
             trace_id = generate_trace_id()
             set_trace_id(trace_id)
-            
+
             client_addr = writer.get_extra_info("peername")
             logger.warning(f"Connection rejected from {client_addr}: limit exceeded")
             try:

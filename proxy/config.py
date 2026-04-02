@@ -4,6 +4,7 @@
 Все настройки описаны как dataclasses — это проще Pydantic
 и не тянет лишние зависимости.
 """
+
 from dataclasses import dataclass, field
 from typing import List
 import yaml
@@ -13,10 +14,11 @@ import yaml
 class UpstreamConfig:
     """
     Один upstream-сервер.
-    
+
     Используется только для хранения конфига,
     рабочий Upstream с семафором создаётся в upstream_pool.py
     """
+
     host: str
     port: int
 
@@ -30,14 +32,15 @@ class UpstreamConfig:
 class TimeoutConfig:
     """
     Таймауты для различных операций.
-    
+
     Храним в миллисекундах (так удобнее в конфиге),
     но properties возвращают секунды для asyncio.wait_for()
     """
-    connect_ms: int = 1000      # 1 сек на коннект — обычно хватает
-    read_ms: int = 15000        # 15 сек на чтение — для медленных ответов
-    write_ms: int = 15000       # 15 сек на запись
-    total_ms: int = 30000       # общий таймаут на весь запрос
+
+    connect_ms: int = 1000  # 1 сек на коннект — обычно хватает
+    read_ms: int = 15000  # 15 сек на чтение — для медленных ответов
+    write_ms: int = 15000  # 15 сек на запись
+    total_ms: int = 30000  # общий таймаут на весь запрос
 
     @property
     def connect(self) -> float:
@@ -59,17 +62,21 @@ class TimeoutConfig:
 @dataclass
 class LimitsConfig:
     """Лимиты на количество соединений."""
-    max_client_conns: int = 1000         # сколько клиентов держим одновременно
-    max_conns_per_upstream: int = 100    # чтобы не завалить upstream
+
+    max_client_conns: int = 1000  # сколько клиентов держим одновременно
+    max_conns_per_upstream: int = 100  # чтобы не завалить upstream
+    backlog: int = 32768  # очередь входящих соединений
+    limit: int = 1048576  # max buffer size
 
 
 @dataclass
 class ProxyConfig:
     """
     Корневой конфиг приложения.
-    
+
     Можно создать через from_yaml() или default() для разработки.
     """
+
     listen_host: str = "127.0.0.1"
     listen_port: int = 8080
     upstreams: List[UpstreamConfig] = field(default_factory=list)
@@ -81,7 +88,7 @@ class ProxyConfig:
     def from_yaml(cls, path: str) -> "ProxyConfig":
         """
         Парсит YAML-конфиг.
-        
+
         Формат см. в config.example.yaml
         """
         with open(path, "r") as f:

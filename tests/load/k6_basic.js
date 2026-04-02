@@ -17,7 +17,7 @@ import { check, sleep } from 'k6';
 const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8080';
 
 export const options = {
-  vus: 10,           // виртуальных пользователей
+  vus: 500,           // виртуальных пользователей
   duration: '30s',  // длительность теста
   thresholds: {
     http_req_duration: ['p(95)<500'],  // 95% запросов быстрее 500ms

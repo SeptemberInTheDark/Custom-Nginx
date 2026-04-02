@@ -1,0 +1,23 @@
+# config.yaml
+listen: "127.0.0.1:8080"
+
+upstreams:
+  - host: "127.0.0.1"
+    port: 9001
+  - host: "127.0.0.1"
+    port: 9002
+
+timeouts:
+  connect_ms: 5000      # Было 10000 — слишком долго
+  read_ms: 5000        # Было 30000 — слишком долго
+  write_ms: 5000       # Было 30000 — слишком долго
+  total_ms: 15000      # Было 60000
+
+limits:
+  max_client_conns: 10000      # Было 2000 — слишком мало
+  max_conns_per_upstream: 500  # Было 400
+  backlog: 32768       # Увеличили
+  limit: 1048576       # Удвоили
+
+logging:
+  level: "info"        # Не debug!

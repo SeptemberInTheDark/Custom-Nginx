@@ -7,8 +7,10 @@
 - стримим данные туда-сюда
 - обрабатываем ошибки
 """
+
 import asyncio
 import logging
+import socket
 
 from proxy.config import TimeoutConfig
 from proxy.upstream_pool import UpstreamPool, Upstream
@@ -30,69 +32,120 @@ async def handle_client(
     timeouts: TimeoutConfig,
 ) -> None:
     """
-    Обрабатывает один HTTP-запрос.
-    
-    Поток данных:
-    client -> parse headers -> upstream -> stream body -> upstream
-    upstream -> stream response -> client
+    Обрабатывает HTTP-запросы с поддержкой keep-alive.
+
+    Цикл keep-alive:
+    1. парсим заголовки запроса
+    2. коннектимся к upstream
+    3. стримим данные туда-сюда
+    4. проверяем "Connection" в ответе
+    5. если close — выходим, иначе ждём следующий запрос
+
+    Trace-ID обновляется для каждого запроса в одном соединении.
     """
-    # генерируем trace_id в начале — все логи в этом запросе будут с ним
-    trace_id = generate_trace_id()
-    set_trace_id(trace_id)
-    
     client_addr = client_writer.get_extra_info("peername")
-    upstream_info = "unknown"
+    request_count = 0
+
+    # Оптимизируем client сокет для производительности
+    sock = client_writer.get_extra_info("socket")
+    if sock:
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except (AttributeError, OSError):
+            pass
 
     try:
-        # парсим только заголовки, тело будем стримить
-        request = await with_timeout(
-            parse_request(client_reader),
-            timeouts.read,
-            "parsing request"
-        )
+        while True:
+            # генерируем новый trace_id для каждого запроса в цепочке
+            trace_id = generate_trace_id()
+            set_trace_id(trace_id)
+            request_count += 1
 
-        logger.debug(f"{request.method} {request.path} from {client_addr}")
+            upstream_info = "unknown"
 
-        # берём соединение из пула (с учётом лимитов и round-robin)
-        async with upstream_pool.acquire_connection(timeouts.connect) as (up_reader, up_writer, upstream):
-            upstream_info = upstream.address
-            logger.debug(f"-> upstream {upstream_info}")
-
-            # отправляем заголовки запроса + добавляем X-Trace-Id
-            await forward_request_headers(request, up_writer, timeouts, trace_id)
-
-            # стримим тело запроса если есть
-            if request.content_length:
-                await stream_body_fixed(
-                    client_reader, up_writer,
-                    request.content_length,
-                    timeouts
+            try:
+                # парсим только заголовки, тело будем стримить
+                request = await with_timeout(
+                    parse_request(client_reader), timeouts.read, "parsing request"
                 )
-            elif request.is_chunked:
-                await stream_body_chunked(client_reader, up_writer, timeouts)
 
-            await up_writer.drain()
+                logger.debug(
+                    f"[{request_count}] {request.method} {request.path} from {client_addr}"
+                )
 
-            # получаем и стримим ответ
-            status_code = await stream_response(up_reader, client_writer, timeouts)
-            logger.info(f"{request.method} {request.path} -> {upstream_info} | {status_code}")
+                # проверяем просит ли клиент закрыть соединение
+                client_wants_close = (
+                    request.headers.get("connection", "").lower() == "close"
+                )
 
-    except TimeoutError as e:
-        logger.warning(f"Timeout: {e}")
-        await send_error(client_writer, 504, "Gateway Timeout", trace_id)
-    except ConnectionError as e:
-        logger.warning(f"Connection error: {e}")
-        await send_error(client_writer, 502, "Bad Gateway", trace_id)
-    except Exception as e:
-        logger.exception(f"Unexpected error: {e}")
-        await send_error(client_writer, 500, "Internal Server Error", trace_id)
+                # берём соединение из пула (с учётом лимитов и round-robin)
+                async with upstream_pool.acquire_connection(timeouts.connect) as (
+                    up_reader,
+                    up_writer,
+                    upstream,
+                ):
+                    upstream_info = upstream.address
+                    logger.debug(f"[{request_count}] -> upstream {upstream_info}")
+
+                    # отправляем заголовки запроса + добавляем X-Trace-Id
+                    await forward_request_headers(
+                        request, up_writer, timeouts, trace_id
+                    )
+
+                    # стримим тело запроса если есть
+                    if request.content_length:
+                        await stream_body_fixed(
+                            client_reader, up_writer, request.content_length, timeouts
+                        )
+                    elif request.is_chunked:
+                        await stream_body_chunked(client_reader, up_writer, timeouts)
+
+                    await up_writer.drain()
+
+                    # получаем и стримим ответ, проверяем Connection header
+                    status_code, upstream_wants_close = await stream_response(
+                        up_reader, client_writer, timeouts
+                    )
+                    logger.info(
+                        f"[{request_count}] {request.method} {request.path} -> {upstream_info} | {status_code}"
+                    )
+
+                # решаем: закрыть соединение или нет
+                should_close = client_wants_close or upstream_wants_close
+                if not should_close:
+                    logger.debug(
+                        f"[{request_count}] keep-alive: waiting for next request"
+                    )
+                    continue
+                else:
+                    logger.debug(f"[{request_count}] closing keep-alive connection")
+                    break
+
+            except TimeoutError as e:
+                logger.warning(f"[{request_count}] Timeout: {e}")
+                await send_error(client_writer, 504, "Gateway Timeout", trace_id)
+                break
+            except ConnectionError as e:
+                # если это ошибка при парсинге первого запроса, это может быть EOF
+                if request_count == 1:
+                    logger.debug(f"[{request_count}] Client disconnected (EOF)")
+                    break
+                logger.warning(f"[{request_count}] Connection error: {e}")
+                await send_error(client_writer, 502, "Bad Gateway", trace_id)
+                break
+            except Exception as e:
+                logger.exception(f"[{request_count}] Unexpected error: {e}")
+                await send_error(client_writer, 500, "Internal Server Error", trace_id)
+                break
+
     finally:
-        # всегда закрываем соединение с клиентом
+        # закрываем соединение с клиентом
         try:
             client_writer.close()
             await client_writer.wait_closed()
         except Exception:
             pass
+        logger.debug(f"Connection from {client_addr} closed ({request_count} requests)")
 
 
 async def forward_request_headers(
@@ -103,9 +156,9 @@ async def forward_request_headers(
 ) -> None:
     """
     Пересылает HTTP-заголовки upstream'у.
-    
+
     Добавляет X-Trace-Id для сквозной трассировки.
-    
+
     Формат HTTP/1.1:
     GET /path HTTP/1.1\r\n
     Host: example.com\r\n
@@ -137,7 +190,7 @@ async def stream_body_fixed(
 ) -> None:
     """
     Стримит тело известной длины (Content-Length).
-    
+
     Читаем чанками и сразу пишем — не буферизируем всё в память.
     drain() после каждого write — это backpressure.
     """
@@ -145,9 +198,7 @@ async def stream_body_fixed(
     while remaining > 0:
         chunk_size = min(CHUNK_SIZE, remaining)
         chunk = await with_timeout(
-            reader.read(chunk_size),
-            timeouts.read,
-            "reading body chunk"
+            reader.read(chunk_size), timeouts.read, "reading body chunk"
         )
         if not chunk:
             raise ConnectionError("Client disconnected while sending body")
@@ -165,7 +216,7 @@ async def stream_body_chunked(
 ) -> None:
     """
     Стримит тело в chunked encoding.
-    
+
     Формат:
     <size_hex>\r\n
     <data>\r\n
@@ -176,9 +227,7 @@ async def stream_body_chunked(
     while True:
         # читаем размер чанка (hex)
         size_line = await with_timeout(
-            reader.readline(),
-            timeouts.read,
-            "reading chunk size"
+            reader.readline(), timeouts.read, "reading chunk size"
         )
         if not size_line:
             raise ConnectionError("Client disconnected during chunked transfer")
@@ -202,9 +251,7 @@ async def stream_body_chunked(
         while remaining > 0:
             to_read = min(CHUNK_SIZE, remaining)
             chunk = await with_timeout(
-                reader.read(to_read),
-                timeouts.read,
-                "reading chunk data"
+                reader.read(to_read), timeouts.read, "reading chunk data"
             )
             if not chunk:
                 raise ConnectionError("Client disconnected during chunk")
@@ -217,17 +264,17 @@ async def stream_response(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     timeouts: TimeoutConfig,
-) -> int:
+) -> tuple:
     """
     Читает ответ от upstream и стримит клиенту.
-    
-    Возвращает HTTP-статус для логов.
+
+    Возвращает (status_code, wants_close):
+    - status_code: HTTP-статус для логов
+    - wants_close: True если в ответе есть "Connection: close"
     """
     # status line: HTTP/1.1 200 OK
     status_line = await with_timeout(
-        reader.readline(),
-        timeouts.read,
-        "reading response status"
+        reader.readline(), timeouts.read, "reading response status"
     )
     if not status_line:
         raise ConnectionError("Upstream closed connection")
@@ -241,15 +288,14 @@ async def stream_response(
     except (IndexError, ValueError):
         status_code = 0
 
-    # читаем заголовки, попутно ищем Content-Length или chunked
+    # читаем заголовки, ищем Content-Length, chunked и Connection
     content_length = None
     is_chunked = False
+    upstream_wants_close = False
 
     while True:
         header_line = await with_timeout(
-            reader.readline(),
-            timeouts.read,
-            "reading response header"
+            reader.readline(), timeouts.read, "reading response header"
         )
         writer.write(header_line)
 
@@ -257,14 +303,18 @@ async def stream_response(
             await writer.drain()
             break
 
-        header_lower = header_line.decode("latin-1").lower()
+        header_lower = header_line.decode("latin-1", errors="ignore").lower()
         if header_lower.startswith("content-length:"):
             try:
                 content_length = int(header_lower.split(":", 1)[1].strip())
             except ValueError:
                 pass
-        elif header_lower.startswith("transfer-encoding:") and "chunked" in header_lower:
+        elif (
+            header_lower.startswith("transfer-encoding:") and "chunked" in header_lower
+        ):
             is_chunked = True
+        elif header_lower.startswith("connection:") and "close" in header_lower:
+            upstream_wants_close = True
 
     # стримим тело
     if content_length is not None:
@@ -273,7 +323,7 @@ async def stream_response(
         await stream_body_chunked(reader, writer, timeouts)
     # else: нет тела (204, 304 и т.п.) или HTTP/1.0 без Content-Length
 
-    return status_code
+    return status_code, upstream_wants_close
 
 
 async def send_error(
@@ -284,7 +334,7 @@ async def send_error(
 ) -> None:
     """
     Отправляет клиенту страницу ошибки.
-    
+
     Включает trace_id в заголовок X-Trace-Id для отладки.
     Connection: close — после ошибки закрываем соединение.
     """
