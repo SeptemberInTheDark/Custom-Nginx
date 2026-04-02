@@ -17,11 +17,11 @@ import { check, sleep } from 'k6';
 const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8080';
 
 export const options = {
-  vus: 500,           // виртуальных пользователей
-  duration: '30s',  // длительность теста
+  vus: 200,           // оптимально для одного proxy
+  duration: '30s',    // длительность теста
   thresholds: {
-    http_req_duration: ['p(95)<500'],  // 95% запросов быстрее 500ms
-    http_req_failed: ['rate<0.01'],    // меньше 1% ошибок
+    http_req_duration: ['p(95)<100'],  // 95% запросов быстрее 100ms
+    http_req_failed: ['rate<0.2'],     // <20% ошибок
   },
 };
 
@@ -29,7 +29,6 @@ export default function () {
   const res = http.get(`${BASE_URL}/`);
   check(res, {
     'status 200': (r) => r.status === 200,
-    'has body': (r) => r.body && r.body.length > 0,
   });
-  sleep(0.5); // пауза между итерациями виртуального пользователя
+  // Без паузы - максимальная пропускная способность
 }

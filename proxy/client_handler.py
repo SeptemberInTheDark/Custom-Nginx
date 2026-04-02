@@ -11,7 +11,7 @@
 import asyncio
 import logging
 import socket
-
+import time
 from proxy.config import TimeoutConfig
 from proxy.upstream_pool import UpstreamPool, Upstream
 from proxy.timeouts import with_timeout
@@ -60,14 +60,21 @@ async def handle_client(
             trace_id = generate_trace_id()
             set_trace_id(trace_id)
             request_count += 1
+            req_start = time.time()
 
             upstream_info = "unknown"
 
             try:
                 # парсим только заголовки, тело будем стримить
+                parse_start = time.time()  # ВРЕМЯ НА ПАРСИНГ ЗАГОЛОВКОВ
                 request = await with_timeout(
-                    parse_request(client_reader), timeouts.read, "parsing request"
+                    parse_request(client_reader),
+                    timeouts.parse,
+                    "parsing request",
                 )
+                parse_ms = (
+                    time.time() - parse_start
+                ) * 1000  # ВРЕМЯ НА ПАРСИНГ ЗАГОЛОВКОВ В МС
 
                 logger.debug(
                     f"[{request_count}] {request.method} {request.path} from {client_addr}"
@@ -78,12 +85,16 @@ async def handle_client(
                     request.headers.get("connection", "").lower() == "close"
                 )
 
-                # берём соединение из пула (с учётом лимитов и round-robin)
+                # берём соединение из пула
+                connect_start = time.time()  # ВРЕМЯ НА УСТАНОВКУ СОЕДИНЕНИЯ С UPSTREAM
                 async with upstream_pool.acquire_connection(timeouts.connect) as (
                     up_reader,
                     up_writer,
                     upstream,
                 ):
+                    connect_ms = (
+                        time.time() - connect_start
+                    ) * 1000  # ВРЕМЯ НА УСТАНОВКУ СОЕДИНЕНИЯ С UPSTREAM В МС
                     upstream_info = upstream.address
                     logger.debug(f"[{request_count}] -> upstream {upstream_info}")
 
@@ -102,12 +113,22 @@ async def handle_client(
 
                     await up_writer.drain()
 
-                    # получаем и стримим ответ, проверяем Connection header
+                    # получаем и стримим ответ
+                    stream_start = (
+                        time.time()
+                    )  # ВРЕМЯ НА ПОЛУЧЕНИЕ И СТРИМИНГ ОТВЕТА ОТ UPSTREAM
                     status_code, upstream_wants_close = await stream_response(
                         up_reader, client_writer, timeouts
                     )
+                    stream_ms = (
+                        time.time() - stream_start
+                    ) * 1000  # ВРЕМЯ НА ПОЛУЧЕНИЕ И СТРИМИНГ ОТВЕТА ОТ UPSTREAM В МС
+                    total_ms = (
+                        time.time() - req_start
+                    ) * 1000  # ОБЩЕЕ ВРЕМЯ НА ОБРАБОТКУ ЗАПРОСА В МС
                     logger.info(
-                        f"[{request_count}] {request.method} {request.path} -> {upstream_info} | {status_code}"
+                        f"[{request_count}] {request.method} {request.path} -> {upstream_info} | {status_code} | "
+                        f"timing: parse={parse_ms:.1f}ms connect={connect_ms:.1f}ms stream={stream_ms:.1f}ms total={total_ms:.1f}ms"  # ← ИЗМЕНИТЬ
                     )
 
                 # решаем: закрыть соединение или нет

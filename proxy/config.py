@@ -6,8 +6,12 @@
 """
 
 from dataclasses import dataclass, field
+from logging import config
 from typing import List
 import yaml
+import time
+
+from proxy.upstream_pool import Upstream
 
 
 @dataclass
@@ -37,10 +41,15 @@ class TimeoutConfig:
     но properties возвращают секунды для asyncio.wait_for()
     """
 
-    connect_ms: int = 1000  # 1 сек на коннект — обычно хватает
-    read_ms: int = 15000  # 15 сек на чтение — для медленных ответов
-    write_ms: int = 15000  # 15 сек на запись
-    total_ms: int = 30000  # общий таймаут на весь запрос
+    parse_ms: int = 3000  # На парсинг заголовков
+    connect_ms: int = 5000  # На подключение к upstream
+    read_ms: int = 15000  # На стриминг ответа
+    write_ms: int = 15000  # На отправку
+    total_ms: int = 30000  # Общий таймаут на весь запрос
+
+    @property
+    def parse(self) -> float:
+        return self.parse_ms / 1000
 
     @property
     def connect(self) -> float:
@@ -104,10 +113,15 @@ class ProxyConfig:
             listen_host = listen
             listen_port = 8080
 
-        upstreams = [
-            UpstreamConfig(host=u["host"], port=u["port"])
-            for u in data.get("upstreams", [])
-        ]
+        upstreams_config = data.get("upstreams", [])
+        upstreams_list = []
+        for u in upstreams_config:
+            upstream = Upstream(
+                host=u["host"],
+                port=u["port"],
+                max_connections=config.limits.max_conns_per_upstream,
+            )
+            upstreams_list.append(upstream)
 
         timeouts_data = data.get("timeouts", {})
         timeouts = TimeoutConfig(
@@ -126,7 +140,7 @@ class ProxyConfig:
         return cls(
             listen_host=listen_host,
             listen_port=listen_port,
-            upstreams=upstreams,
+            upstreams=upstreams_list,
             timeouts=timeouts,
             limits=limits,
             log_level=data.get("logging", {}).get("level", "info"),
@@ -141,3 +155,44 @@ class ProxyConfig:
                 UpstreamConfig(host="127.0.0.1", port=9002),
             ]
         )
+
+
+async def parse_request(request):
+    """Парсит заголовки."""
+    return {"host": "example.com", "port": 80}
+
+
+async def stream_response():
+    """Стримим ответ."""
+    return 200, b"Hello, World!"
+
+
+async def main():
+    """Основная функция."""
+    config = ProxyConfig.from_yaml("config.yaml")
+
+    start_time = time.time()
+
+    # парсим заголовки
+    parse_start = time.time()
+    request = await with_timeout(parse_request(...))
+    parse_ms = (time.time() - parse_start) * 1000
+
+    # подключаемся
+    connect_start = time.time()
+    async with upstream_pool.acquire_connection(...):
+        connect_ms = (time.time() - connect_start) * 1000
+
+    # стримим
+    stream_start = time.time()
+    status_code, _ = await stream_response()
+    stream_ms = (time.time() - stream_start) * 1000
+
+    logger.info(
+        f"[{request_count}] timing: parse={parse_ms:.1f}ms "
+        f"connect={connect_ms:.1f}ms stream={stream_ms:.1f}ms"
+    )
+
+
+if __name__ == "__main__":
+    main()

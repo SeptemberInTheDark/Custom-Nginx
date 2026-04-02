@@ -8,14 +8,14 @@ upstreams:
     port: 9002
 
 timeouts:
-  connect_ms: 5000      # Было 10000 — слишком долго
-  read_ms: 5000        # Было 30000 — слишком долго
-  write_ms: 5000       # Было 30000 — слишком долго
-  total_ms: 15000      # Было 60000
+  parse_ms: 3000      # Был 2000 → может не хватать под нагрузкой
+  connect_ms: 5000    
+  read_ms: 15000      # Был 10000 → мягче для больших ответов
+  total_ms: 30000     # Весь запрос не более 30с
 
 limits:
   max_client_conns: 10000      # Было 2000 — слишком мало
-  max_conns_per_upstream: 500  # Было 400
+  max_conns_per_upstream: 800  # Было 400, увеличиваем для лучшего throughput
   backlog: 32768       # Увеличили
   limit: 1048576       # Удвоили
 
