@@ -76,10 +76,6 @@ async def handle_client(
                     time.time() - parse_start
                 ) * 1000  # ВРЕМЯ НА ПАРСИНГ ЗАГОЛОВКОВ В МС
 
-                logger.debug(
-                    f"[{request_count}] {request.method} {request.path} from {client_addr}"
-                )
-
                 # проверяем просит ли клиент закрыть соединение
                 client_wants_close = (
                     request.headers.get("connection", "").lower() == "close"
@@ -96,7 +92,6 @@ async def handle_client(
                         time.time() - connect_start
                     ) * 1000  # ВРЕМЯ НА УСТАНОВКУ СОЕДИНЕНИЯ С UPSTREAM В МС
                     upstream_info = upstream.address
-                    logger.debug(f"[{request_count}] -> upstream {upstream_info}")
 
                     # отправляем заголовки запроса + добавляем X-Trace-Id
                     await forward_request_headers(
@@ -126,20 +121,18 @@ async def handle_client(
                     total_ms = (
                         time.time() - req_start
                     ) * 1000  # ОБЩЕЕ ВРЕМЯ НА ОБРАБОТКУ ЗАПРОСА В МС
-                    logger.info(
-                        f"[{request_count}] {request.method} {request.path} -> {upstream_info} | {status_code} | "
-                        f"timing: parse={parse_ms:.1f}ms connect={connect_ms:.1f}ms stream={stream_ms:.1f}ms total={total_ms:.1f}ms"  # ← ИЗМЕНИТЬ
-                    )
+                    # Логируем только slow/error запросы для не замедлить систему
+                    if total_ms > 1000 or status_code >= 400:
+                        logger.warning(
+                            f"[{request_count}] {request.method} {request.path} -> {upstream_info} | {status_code} | "
+                            f"timing: parse={parse_ms:.1f}ms connect={connect_ms:.1f}ms stream={stream_ms:.1f}ms total={total_ms:.1f}ms"
+                        )
 
                 # решаем: закрыть соединение или нет
                 should_close = client_wants_close or upstream_wants_close
                 if not should_close:
-                    logger.debug(
-                        f"[{request_count}] keep-alive: waiting for next request"
-                    )
                     continue
                 else:
-                    logger.debug(f"[{request_count}] closing keep-alive connection")
                     break
 
             except TimeoutError as e:

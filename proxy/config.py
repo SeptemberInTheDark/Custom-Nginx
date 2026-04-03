@@ -6,10 +6,8 @@
 """
 
 from dataclasses import dataclass, field
-from logging import config
 from typing import List
 import yaml
-import time
 
 from proxy.upstream_pool import Upstream
 
@@ -41,7 +39,7 @@ class TimeoutConfig:
     но properties возвращают секунды для asyncio.wait_for()
     """
 
-    parse_ms: int = 3000  # На парсинг заголовков
+    parse_ms: int = 15000  # На парсинг заголовков (keep-alive может быть медленнее)
     connect_ms: int = 5000  # На подключение к upstream
     read_ms: int = 15000  # На стриминг ответа
     write_ms: int = 15000  # На отправку
@@ -113,28 +111,34 @@ class ProxyConfig:
             listen_host = listen
             listen_port = 8080
 
+        # Сначала парсим лимиты, потом используем их для upstreams
+        limits_data = data.get("limits", {})
+        limits = LimitsConfig(
+            max_client_conns=limits_data.get("max_client_conns", 1000),
+            max_conns_per_upstream=limits_data.get("max_conns_per_upstream", 100),
+            backlog=limits_data.get("backlog", 32768),
+            limit=limits_data.get("limit", 1048576),
+        )
+
+        # Теперь создаем upstreams с правильным max_connections из конфига
         upstreams_config = data.get("upstreams", [])
         upstreams_list = []
         for u in upstreams_config:
             upstream = Upstream(
                 host=u["host"],
                 port=u["port"],
-                max_connections=config.limits.max_conns_per_upstream,
+                max_connections=limits.max_conns_per_upstream,  # ← ИСПРАВЛЕНО!
             )
             upstreams_list.append(upstream)
 
+        # Парсим таймауты
         timeouts_data = data.get("timeouts", {})
         timeouts = TimeoutConfig(
-            connect_ms=timeouts_data.get("connect_ms", 1000),
+            parse_ms=timeouts_data.get("parse_ms", 15000),
+            connect_ms=timeouts_data.get("connect_ms", 5000),
             read_ms=timeouts_data.get("read_ms", 15000),
             write_ms=timeouts_data.get("write_ms", 15000),
             total_ms=timeouts_data.get("total_ms", 30000),
-        )
-
-        limits_data = data.get("limits", {})
-        limits = LimitsConfig(
-            max_client_conns=limits_data.get("max_client_conns", 1000),
-            max_conns_per_upstream=limits_data.get("max_conns_per_upstream", 100),
         )
 
         return cls(
@@ -149,50 +153,8 @@ class ProxyConfig:
     @classmethod
     def default(cls) -> "ProxyConfig":
         """Дефолтный конфиг для локальной разработки."""
-        return cls(
-            upstreams=[
-                UpstreamConfig(host="127.0.0.1", port=9001),
-                UpstreamConfig(host="127.0.0.1", port=9002),
-            ]
-        )
-
-
-async def parse_request(request):
-    """Парсит заголовки."""
-    return {"host": "example.com", "port": 80}
-
-
-async def stream_response():
-    """Стримим ответ."""
-    return 200, b"Hello, World!"
-
-
-async def main():
-    """Основная функция."""
-    config = ProxyConfig.from_yaml("config.yaml")
-
-    start_time = time.time()
-
-    # парсим заголовки
-    parse_start = time.time()
-    request = await with_timeout(parse_request(...))
-    parse_ms = (time.time() - parse_start) * 1000
-
-    # подключаемся
-    connect_start = time.time()
-    async with upstream_pool.acquire_connection(...):
-        connect_ms = (time.time() - connect_start) * 1000
-
-    # стримим
-    stream_start = time.time()
-    status_code, _ = await stream_response()
-    stream_ms = (time.time() - stream_start) * 1000
-
-    logger.info(
-        f"[{request_count}] timing: parse={parse_ms:.1f}ms "
-        f"connect={connect_ms:.1f}ms stream={stream_ms:.1f}ms"
-    )
-
-
-if __name__ == "__main__":
-    main()
+        upstreams = [
+            Upstream(host="127.0.0.1", port=9001, max_connections=100),
+            Upstream(host="127.0.0.1", port=9002, max_connections=100),
+        ]
+        return cls(upstreams=upstreams)
