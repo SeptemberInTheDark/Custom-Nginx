@@ -12,18 +12,18 @@ timeouts и лимитов соединений.
 
 ## Что умеет
 
-| Возможность | Статус |
-| --- | --- |
-| TCP-сервер на `asyncio.start_server` | готово |
-| Минимальный HTTP/1.1 parser: start-line + headers | готово |
-| Reverse proxy к одному или нескольким upstream | готово |
-| Round-robin балансировка | готово |
+| Возможность                                                             | Статус |
+| ---------------------------------------------------------------------------------- | ------------ |
+| TCP-сервер на `asyncio.start_server`                                     | готово |
+| Минимальный HTTP/1.1 parser: start-line + headers                       | готово |
+| Reverse proxy к одному или нескольким upstream                 | готово |
+| Round-robin балансировка                                               | готово |
 | Streaming request/response body без полного буфера в памяти | готово |
-| Backpressure через `await writer.drain()` | готово |
-| Keep-alive для client и upstream соединений | готово |
-| Таймауты `connect/read/write/total` | готово |
-| Лимиты client/upstream соединений | готово |
-| Простое логирование slow/error запросов | готово |
+| Backpressure через `await writer.drain()`                                   | готово |
+| Keep-alive для client и upstream соединений                          | готово |
+| Таймауты `connect/read/write/total`                                      | готово |
+| Лимиты client/upstream соединений                                  | готово |
+| Простое логирование slow/error запросов                  | готово |
 
 ## Быстрый старт
 
@@ -143,16 +143,16 @@ stream response back to client
 
 Основные модули:
 
-| Файл | Ответственность |
-| --- | --- |
-| `proxy/main.py` | CLI entrypoint, загрузка конфига, graceful shutdown |
-| `proxy/proxy_server.py` | TCP-сервер, лимит client connections |
-| `proxy/client_handler.py` | HTTP keep-alive цикл, streaming request/response |
-| `proxy/upstream_pool.py` | round-robin, лимиты и reuse upstream-соединений |
-| `proxy/timeouts.py` | обёртки для `asyncio.wait_for` и `writer.drain()` |
-| `proxy/utils/http.py` | минимальный HTTP parser |
-| `proxy/logger.py` | trace-id и формат логов |
-| `proxy/metrics.py` | базовые метрики |
+| Файл                    | Ответственность                                     |
+| --------------------------- | ------------------------------------------------------------------ |
+| `proxy/main.py`           | CLI entrypoint, загрузка конфига, graceful shutdown |
+| `proxy/proxy_server.py`   | TCP-сервер, лимит client connections                    |
+| `proxy/client_handler.py` | HTTP keep-alive цикл, streaming request/response               |
+| `proxy/upstream_pool.py`  | round-robin, лимиты и reuse upstream-соединений   |
+| `proxy/timeouts.py`       | обёртки для `asyncio.wait_for` и `writer.drain()`   |
+| `proxy/utils/http.py`     | минимальный HTTP parser                                 |
+| `proxy/logger.py`         | trace-id и формат логов                                |
+| `proxy/metrics.py`        | базовые метрики                                      |
 
 ## Стратегия стриминга
 
@@ -214,23 +214,3 @@ config.yaml
 config.example.yaml
 README.md
 ```
-
-## Что можно улучшить дальше
-
-- Health-checks upstream сервисов и исключение недоступных из балансировки.
-- Retry policy для безопасных методов при connect/read timeout.
-- Circuit breaker для проблемного upstream.
-- Rate limiting через token bucket.
-- TLS termination на входе или TLS к upstream.
-- Горячая перезагрузка конфигурации через `SIGHUP`.
-- Заголовки `X-Forwarded-For`, `Via`, `X-Request-Id`.
-- Отдельная `/metrics` ручка или мини-панель статистики.
-
-## Вопросы для самопроверки
-
-- Где и зачем применять `await writer.drain()`?
-- Чем отличается отмена задачи от таймаута?
-- Что происходит с event loop, когда upstream долго отвечает?
-- Почему сеть считается IO-bound нагрузкой?
-- Как избежать утечек при исключениях во время streaming?
-- Почему важно ограничивать число одновременных соединений?
