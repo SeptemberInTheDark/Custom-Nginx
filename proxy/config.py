@@ -71,7 +71,7 @@ class LimitsConfig:
     """Лимиты на количество соединений."""
 
     max_client_conns: int = 1000  # сколько клиентов держим одновременно
-    max_conns_per_upstream: int = 100  # чтобы не завалить upstream
+    max_conns_per_upstream: int = 250  # чтобы не завалить upstream и держать 500 VU
     backlog: int = 32768  # очередь входящих соединений
     limit: int = 1048576  # max buffer size
 
@@ -115,7 +115,7 @@ class ProxyConfig:
         limits_data = data.get("limits", {})
         limits = LimitsConfig(
             max_client_conns=limits_data.get("max_client_conns", 1000),
-            max_conns_per_upstream=limits_data.get("max_conns_per_upstream", 100),
+            max_conns_per_upstream=limits_data.get("max_conns_per_upstream", 250),
             backlog=limits_data.get("backlog", 32768),
             limit=limits_data.get("limit", 1048576),
         )
@@ -154,7 +154,7 @@ class ProxyConfig:
     def default(cls) -> "ProxyConfig":
         """Дефолтный конфиг для локальной разработки."""
         upstreams = [
-            Upstream(host="127.0.0.1", port=9001, max_connections=100),
-            Upstream(host="127.0.0.1", port=9002, max_connections=100),
+            Upstream(host="127.0.0.1", port=9001, max_connections=250),
+            Upstream(host="127.0.0.1", port=9002, max_connections=250),
         ]
         return cls(upstreams=upstreams)

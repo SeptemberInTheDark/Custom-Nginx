@@ -14,10 +14,10 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8080';
+const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:18080';
 
 export const options = {
-  vus: 200,           // оптимально для одного proxy
+  vus: 500,           // оптимально для одного proxy
   duration: '30s',    // длительность теста
   thresholds: {
     http_req_duration: ['p(95)<100'],  // 95% запросов быстрее 100ms

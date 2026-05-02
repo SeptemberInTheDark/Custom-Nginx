@@ -4,14 +4,16 @@
 Реализует:
 - round-robin выбор upstream
 - ограничение соединений к каждому upstream через семафор
-- автоматическое закрытие соединений через контекстный менеджер
+- keep-alive reuse upstream-соединений
+- автоматическое закрытие сломанных соединений через контекстный менеджер
 """
 
 import asyncio
 import logging
 import socket
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import List, Tuple, AsyncIterator
+from typing import AsyncIterator, Deque, Dict, List
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger("proxy")
@@ -42,6 +44,21 @@ class Upstream:
         return f"{self.host}:{self.port}"
 
 
+@dataclass
+class UpstreamConnection:
+    """Открытое соединение к upstream.
+
+    `reusable` выставляет client_handler после чтения ответа. Если ответ был
+    close-delimited или upstream попросил `Connection: close`, сокет нельзя
+    возвращать в пул: следующий HTTP-ответ будет невозможно отделить.
+    """
+
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    upstream: Upstream
+    reusable: bool = True
+
+
 class UpstreamPool:
     """
     Пул с round-robin балансировкой.
@@ -55,37 +72,53 @@ class UpstreamPool:
             raise ValueError("At least one upstream is required")
         self._upstreams = upstreams
         self._index = 0
+        self._rr_lock = asyncio.Lock()
+        self._idle: Dict[str, Deque[UpstreamConnection]] = defaultdict(deque)
 
     async def get_next(self) -> Upstream:
         """
         Выбирает следующий upstream по кругу.
 
-        Без лока так как в Python инкремент int атомарен на 64-бит системах.
+        Лок нужен, чтобы несколько задач не выбирали один и тот же индекс одновременно.
         """
-        upstream = self._upstreams[self._index]
-        self._index = (self._index + 1) % len(self._upstreams)
-        return upstream
+        async with self._rr_lock:
+            start = self._index
+            self._index = (self._index + 1) % len(self._upstreams)
+
+            # Сохраняем round-robin порядок, но не заставляем запрос ждать
+            # занятый upstream, если следующий прямо сейчас свободен.
+            for offset in range(len(self._upstreams)):
+                candidate = self._upstreams[(start + offset) % len(self._upstreams)]
+                if self._idle[candidate.address] or not candidate.semaphore.locked():
+                    return candidate
+
+            return self._upstreams[start]
 
     @asynccontextmanager
     async def acquire_connection(
         self, timeout: float
-    ) -> AsyncIterator[Tuple[asyncio.StreamReader, asyncio.StreamWriter, Upstream]]:
+    ) -> AsyncIterator[UpstreamConnection]:
         """
         Получает соединение к upstream.
 
         1. Выбираем upstream (round-robin)
         2. Ждём слот в семафоре (лимит соединений)
-        3. Открываем TCP-соединение
+        3. Переиспользуем idle keep-alive соединение или открываем TCP-соединение
         4. yield - отдаём наружу
-        5. finally - гарантированно закрываем
+        5. finally - возвращаем живой сокет в пул или закрываем
 
         Возвращаем и upstream чтобы знать куда попали (для логов).
         """
         upstream = await self.get_next()
-        writer = None
+        conn = None
+        acquired = False
 
-        async with upstream.semaphore:
-            try:
+        try:
+            conn = self._take_idle(upstream)
+
+            if conn is None:
+                await asyncio.wait_for(upstream.semaphore.acquire(), timeout=timeout)
+                acquired = True
                 reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(upstream.host, upstream.port),
                     timeout=timeout,
@@ -99,14 +132,24 @@ class UpstreamPool:
                     except (AttributeError, OSError):
                         pass
 
-                yield reader, writer, upstream
-            finally:
-                if writer is not None:
-                    try:
-                        writer.close()
-                        await writer.wait_closed()
-                    except Exception:
-                        pass  # уже закрыт или сломался - ок
+                conn = UpstreamConnection(reader, writer, upstream)
+
+            try:
+                yield conn
+            except BaseException:
+                conn.reusable = False
+                raise
+        finally:
+            if conn is None:
+                if acquired:
+                    upstream.semaphore.release()
+                return
+
+            if conn.reusable and not conn.writer.is_closing():
+                self._idle[conn.upstream.address].append(conn)
+            else:
+                await self._close_connection(conn)
+                upstream.semaphore.release()
 
     @property
     def upstreams(self) -> List[Upstream]:
@@ -115,3 +158,22 @@ class UpstreamPool:
 
     def __len__(self) -> int:
         return len(self._upstreams)
+
+    def _take_idle(self, upstream: Upstream) -> UpstreamConnection | None:
+        """Достаёт живое keep-alive соединение из пула."""
+        idle = self._idle[upstream.address]
+        while idle:
+            conn = idle.pop()
+            if not conn.writer.is_closing():
+                conn.reusable = True
+                return conn
+            upstream.semaphore.release()
+        return None
+
+    async def _close_connection(self, conn: UpstreamConnection) -> None:
+        """Закрывает upstream-соединение без проброса ошибок наружу."""
+        try:
+            conn.writer.close()
+            await conn.writer.wait_closed()
+        except Exception:
+            pass  # уже закрыт или сломался

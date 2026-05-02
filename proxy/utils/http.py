@@ -9,8 +9,13 @@
 Тело не читаем — оно стримится отдельно.
 """
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 import asyncio
+
+
+MAX_REQUEST_LINE = 8192
+MAX_HEADER_LINE = 8192
+MAX_HEADERS_SIZE = 64 * 1024
 
 
 @dataclass
@@ -59,6 +64,8 @@ async def parse_request(reader: asyncio.StreamReader) -> HttpRequest:
     line = await reader.readline()
     if not line:
         raise ConnectionError("Empty request")
+    if len(line) > MAX_REQUEST_LINE:
+        raise ValueError("Request line is too large")
 
     # latin-1 — стандартная кодировка для HTTP/1.x headers
     parts = line.decode("latin-1").strip().split(" ", 2)
@@ -69,13 +76,29 @@ async def parse_request(reader: asyncio.StreamReader) -> HttpRequest:
 
     # читаем заголовки до пустой строки
     headers: Dict[str, str] = {}
+    headers_size = len(line)
     while True:
         line = await reader.readline()
+        headers_size += len(line)
+        if len(line) > MAX_HEADER_LINE:
+            raise ValueError("Header line is too large")
+        if headers_size > MAX_HEADERS_SIZE:
+            raise ValueError("Request headers are too large")
         if line in (b"\r\n", b"\n", b""):
             break
         # Host: example.com\r\n -> (Host, example.com)
         name, _, value = line.decode("latin-1").partition(":")
+        if not name or not _:
+            raise ValueError(f"Malformed header line: {line!r}")
         # lowercase для удобства — "Content-Length" == "content-length"
         headers[name.strip().lower()] = value.strip()
 
     return HttpRequest(method, path, version, headers)
+
+
+def parse_header_line(line: bytes) -> Tuple[str, str]:
+    """Возвращает HTTP header как (lowercase-name, value)."""
+    name, sep, value = line.decode("latin-1", errors="ignore").partition(":")
+    if not sep:
+        return "", ""
+    return name.strip().lower(), value.strip()

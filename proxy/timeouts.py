@@ -27,6 +27,15 @@ async def with_timeout(
         raise TimeoutError(f"Timeout during {operation} after {timeout}s")
 
 
+async def drain_with_timeout(
+    writer: asyncio.StreamWriter,
+    timeout: float,
+    operation: str = "writing data",
+) -> None:
+    """Ждёт drain() с write timeout, чтобы медленный получатель не держал слот вечно."""
+    await with_timeout(writer.drain(), timeout, operation)
+
+
 class TimeoutScope:
     """
     Общий таймаут на несколько операций.
