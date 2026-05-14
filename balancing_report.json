@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-05-14T12:22:48.344Z",
+  "test_duration_ms": 66722.606,
+  "total_requests": 17593,
+  "workers": {
+    "worker_0": {
+      "requests": 4280,
+      "avg_duration_ms": "0.00",
+      "min_duration_ms": "0.00",
+      "max_duration_ms": "0.00",
+      "p95_duration_ms": "0.00",
+      "percentage": "24.33"
+    },
+    "worker_1": {
+      "requests": 4560,
+      "avg_duration_ms": "0.00",
+      "min_duration_ms": "0.00",
+      "max_duration_ms": "0.00",
+      "p95_duration_ms": "0.00",
+      "percentage": "25.92"
+    },
+    "worker_2": {
+      "requests": 4370,
+      "avg_duration_ms": "0.00",
+      "min_duration_ms": "0.00",
+      "max_duration_ms": "0.00",
+      "p95_duration_ms": "0.00",
+      "percentage": "24.84"
+    },
+    "worker_3": {
+      "requests": 4383,
+      "avg_duration_ms": "0.00",
+      "min_duration_ms": "0.00",
+      "max_duration_ms": "0.00",
+      "p95_duration_ms": "0.00",
+      "percentage": "24.91"
+    }
+  },
+  "balance_analysis": {
+    "total_requests": 17593,
+    "workers_count": 4,
+    "expected_per_worker": "4398.25",
+    "std_deviation": "101.46",
+    "coefficient_of_variation": "2.31%",
+    "max_requests": 4560,
+    "min_requests": 4280,
+    "max_min_ratio": "1.07",
+    "balance_quality": "Excellent",
+    "recommendation": "✅ Отличная балансировка! Нагрузка распределена равномерно."
+  },
+  "summary": {
+    "http_req_duration": {
+      "med": 0,
+      "max": 0,
+      "p(90)": 0,
+      "p(95)": 0,
+      "avg": 0,
+      "min": 0
+    },
+    "http_req_failed": {
+      "rate": 1,
+      "passes": 17593,
+      "fails": 0
+    },
+    "iterations": {
+      "count": 17593,
+      "rate": 263.67375398976475
+    }
+  }
+}
